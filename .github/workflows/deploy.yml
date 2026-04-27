@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/reflect-game-factory-LbTsW
+      - claude/test-github-pages-jpBMh
   workflow_dispatch:
 
 permissions:
