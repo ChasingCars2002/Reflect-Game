@@ -11,6 +11,7 @@ export default function GameBoard({
   dragHandlers,
   onRotate,
   onRemove,
+  gridN,
 }) {
   const containerRef = useRef(null)
   const [cellSize, setCellSize] = useState(0)
@@ -18,14 +19,13 @@ export default function GameBoard({
   useLayoutEffect(() => {
     function measure() {
       if (!containerRef.current) return
-      // Each cell is one of 5 columns; container width / 5 = cell width
       const w = containerRef.current.getBoundingClientRect().width
-      setCellSize(w / 5)
+      setCellSize(w / gridN)
     }
     measure()
     window.addEventListener('resize', measure)
     return () => window.removeEventListener('resize', measure)
-  }, [])
+  }, [gridN])
 
   // Lookup map for fast beam-path testing
   const beamSet = new Set()
@@ -36,8 +36,8 @@ export default function GameBoard({
   return (
     <div
       ref={containerRef}
-      className="relative inline-grid grid-cols-5 border border-grid-line rounded-md bg-bg-lab shadow-[0_0_30px_rgba(0,245,255,0.08)]"
-      style={{ touchAction: 'none' }}
+      className="relative inline-grid border border-grid-line rounded-md bg-bg-lab shadow-[0_0_30px_rgba(0,245,255,0.08)]"
+      style={{ gridTemplateColumns: `repeat(${gridN}, 1fr)`, touchAction: 'none' }}
     >
       {parsed.cells.map((row, r) =>
         row.map((cellData, c) => (
@@ -62,6 +62,7 @@ export default function GameBoard({
         sourcePos={parsed.source}
         cellSize={cellSize}
         solved={beam.solved}
+        gridN={gridN}
       />
     </div>
   )

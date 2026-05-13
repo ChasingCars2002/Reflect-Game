@@ -12,12 +12,12 @@ export function useGameState(levelData) {
 
   const parsed = useMemo(() => parseGrid(grid), [grid])
 
-  const [playerCells, setPlayerCells] = useState(() => emptyPlayerCells())
+  const [playerCells, setPlayerCells] = useState(() => emptyPlayerCells(grid.length))
   const [inventory, setInventory] = useState(initialInventory)
 
   // Reset state whenever the level changes
   useEffect(() => {
-    setPlayerCells(emptyPlayerCells())
+    setPlayerCells(emptyPlayerCells(grid.length))
     setInventory(initialInventory)
   }, [levelData.id, initialInventory])
 
@@ -95,9 +95,9 @@ export function useGameState(levelData) {
   )
 
   const resetLevel = useCallback(() => {
-    setPlayerCells(emptyPlayerCells())
+    setPlayerCells(emptyPlayerCells(grid.length))
     setInventory(initialInventory)
-  }, [initialInventory])
+  }, [grid.length, initialInventory])
 
   return {
     parsed,

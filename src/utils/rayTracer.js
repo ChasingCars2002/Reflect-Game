@@ -21,9 +21,10 @@ const REFLECT_BSLASH = { N: 'W', W: 'N', S: 'E', E: 'S' }
 export function traceBeam(grid, playerCells) {
   // Locate source
   let startRow = -1, startCol = -1, startDir = null
+  const N = grid.length
   outer:
-  for (let r = 0; r < 5; r++) {
-    for (let c = 0; c < 5; c++) {
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
       const cell = grid[r][c]
       if (cell && cell.startsWith('S') && cell.length === 2) {
         startRow = r
@@ -48,7 +49,7 @@ export function traceBeam(grid, playerCells) {
     const nc = col + dc
 
     // Out of bounds
-    if (nr < 0 || nr > 4 || nc < 0 || nc > 4) {
+    if (nr < 0 || nr >= N || nc < 0 || nc >= N) {
       return { path, solved: false, loop: false }
     }
 

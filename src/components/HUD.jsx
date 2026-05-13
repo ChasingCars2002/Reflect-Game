@@ -1,7 +1,7 @@
 import React from 'react'
 
 function DifficultyDots({ value }) {
-  const dots = [1, 2, 3, 4]
+  const dots = [1, 2, 3, 4, 5, 6]
   return (
     <span className="inline-flex gap-1 ml-2">
       {dots.map((d) => (

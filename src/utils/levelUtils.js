@@ -1,5 +1,5 @@
-export function emptyPlayerCells() {
-  return Array.from({ length: 5 }, () => Array(5).fill(null))
+export function emptyPlayerCells(n) {
+  return Array.from({ length: n }, () => Array(n).fill(null))
 }
 
 /**

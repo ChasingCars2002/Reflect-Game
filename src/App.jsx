@@ -47,6 +47,7 @@ export default function App() {
           dragHandlers={dragHandlers}
           onRotate={game.rotateMirror}
           onRemove={game.removeMirror}
+          gridN={level.grid.length}
         />
 
         <MirrorInventory

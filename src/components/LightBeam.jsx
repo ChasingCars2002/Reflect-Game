@@ -10,7 +10,7 @@ import React, { useLayoutEffect, useRef, useState } from 'react'
  *   cellSize: pixels per cell
  *   solved: boolean (just for color tint potentially)
  */
-export default function LightBeam({ path, sourcePos, cellSize, solved }) {
+export default function LightBeam({ path, sourcePos, cellSize, solved, gridN }) {
   const polyRef = useRef(null)
   const [length, setLength] = useState(0)
   const [animKey, setAnimKey] = useState(0)
@@ -40,7 +40,7 @@ export default function LightBeam({ path, sourcePos, cellSize, solved }) {
 
   if (points.length < 2 || cellSize <= 0) return null
 
-  const totalSize = cellSize * 5
+  const totalSize = cellSize * gridN
 
   return (
     <svg

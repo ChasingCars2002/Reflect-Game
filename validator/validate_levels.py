@@ -8,16 +8,14 @@ new seeds.
 Usage:
     python validate_levels.py validate seeds.json
     python validate_levels.py generate <count> <output.json>
-    python validate_levels.py generate-50            # writes seeds.json with 50 levels
+    python validate_levels.py generate-all            # writes seeds.json with 50 levels
 """
 
 from __future__ import annotations
 import json
 import random
 import sys
-from itertools import combinations, product
 from pathlib import Path
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Beam simulation (mirror of src/utils/rayTracer.js)
@@ -28,12 +26,11 @@ SOURCE_DIR = {">": "E", "<": "W", "^": "N", "v": "S"}
 SLASH = {"N": "E", "E": "N", "S": "W", "W": "S"}
 BSLASH = {"N": "W", "W": "N", "S": "E", "E": "S"}
 
-GRID_N = 5  # 5x5
-
 
 def find_source(grid):
-    for r in range(GRID_N):
-        for c in range(GRID_N):
+    n = len(grid)
+    for r in range(n):
+        for c in range(n):
             cell = grid[r][c]
             if isinstance(cell, str) and len(cell) == 2 and cell[0] == "S":
                 return r, c, SOURCE_DIR[cell[1]]
@@ -41,19 +38,16 @@ def find_source(grid):
 
 
 def find_target(grid):
-    for r in range(GRID_N):
-        for c in range(GRID_N):
+    n = len(grid)
+    for r in range(n):
+        for c in range(n):
             if grid[r][c] == "T":
                 return r, c
     return None
 
 
 def trace_beam(grid, player):
-    """
-    grid: 5x5 list of cell strings
-    player: dict {(r,c): "M/" or "M\\"} of player-placed mirrors
-    Returns (solved: bool, path: list[(r,c,dir)])
-    """
+    n = len(grid)
     src = find_source(grid)
     if src is None:
         return False, []
@@ -64,7 +58,7 @@ def trace_beam(grid, player):
     while True:
         dr, dc = DIRS[direction]
         nr, nc = r + dr, c + dc
-        if not (0 <= nr < GRID_N and 0 <= nc < GRID_N):
+        if not (0 <= nr < n and 0 <= nc < n):
             return False, path
 
         key = (nr, nc, direction)
@@ -82,59 +76,61 @@ def trace_beam(grid, player):
             direction = SLASH[direction]
         elif content in ("F\\", "M\\"):
             direction = BSLASH[direction]
-        # "." continues straight
 
         r, c = nr, nc
 
 
 # ---------------------------------------------------------------------------
-# Solvability
+# Solvability — beam-guided DFS with memoisation
 # ---------------------------------------------------------------------------
 
 def empty_cells(grid):
-    return [(r, c) for r in range(GRID_N) for c in range(GRID_N) if grid[r][c] == "."]
+    n = len(grid)
+    return [(r, c) for r in range(n) for c in range(n) if grid[r][c] == "."]
 
 
-def find_solution(level):
+def find_solution_guided(level):
     """
-    Search for a placement of UP TO `inventory` mirrors on empty cells
-    that solves the puzzle. Returns (solvable, mirrors_used, placement).
+    Search for a placement of UP TO `inventory` mirrors on empty cells that
+    solves the puzzle. Uses beam-guided DFS: only considers placing mirrors
+    on cells the current beam travels through, since only those can redirect
+    the beam. Returns (solvable, mirrors_used, placement).
     """
     grid = level["grid"]
-    n = level["inventory"]
+    n_inv = level["inventory"]
     if find_source(grid) is None or find_target(grid) is None:
         return False, 0, None
 
-    empties = empty_cells(grid)
+    # memo[frozen_state] = max budget at which we tried this state and failed
+    memo = {}
 
-    # Try k=0..n (zero-mirror solution would mean trivial)
-    for k in range(0, n + 1):
-        if k > len(empties):
-            break
-        for positions in combinations(empties, k):
-            for types in product(("/", "\\"), repeat=k):
-                player = {pos: f"M{t}" for pos, t in zip(positions, types)}
-                solved, _ = trace_beam(grid, player)
-                if solved:
-                    return True, k, player
-    return False, 0, None
+    def dfs(player, budget):
+        key = frozenset(player.items())
+        # If we already tried this exact state with at least this budget and failed, skip
+        if memo.get(key, -1) >= budget:
+            return None
+        memo[key] = budget
 
+        solved, path = trace_beam(grid, player)
+        if solved:
+            return player
+        if budget == 0:
+            return None
+        candidates = [
+            (r, c) for (r, c, _) in path
+            if grid[r][c] == "." and (r, c) not in player
+        ]
+        for pos in candidates:
+            for mtype in ("M/", "M\\"):
+                result = dfs({**player, pos: mtype}, budget - 1)
+                if result is not None:
+                    return result
+        return None
 
-def find_min_mirror_solution(level, max_mirrors):
-    """Same as find_solution but only checks up to max_mirrors."""
-    grid = level["grid"]
-    if find_source(grid) is None or find_target(grid) is None:
-        return False, 0, None
-    empties = empty_cells(grid)
-    for k in range(0, max_mirrors + 1):
-        if k > len(empties):
-            break
-        for positions in combinations(empties, k):
-            for types in product(("/", "\\"), repeat=k):
-                player = {pos: f"M{t}" for pos, t in zip(positions, types)}
-                solved, _ = trace_beam(grid, player)
-                if solved:
-                    return True, k, player
+    for k in range(0, n_inv + 1):
+        result = dfs({}, k)
+        if result is not None:
+            return True, len(result), result
     return False, 0, None
 
 
@@ -142,38 +138,26 @@ def find_min_mirror_solution(level, max_mirrors):
 # D4 symmetry — uniqueness check
 # ---------------------------------------------------------------------------
 
-# When the grid is rotated/reflected, mirror types may flip.
-# `/` and `\` swap under: 90° rotation, 270° rotation, horizontal reflection,
-# vertical reflection. They are preserved under: identity, 180° rotation,
-# main-diagonal reflection, anti-diagonal reflection.
-#
-# For the source direction, we also need to remap N/S/E/W under each transform.
+def make_transforms(n1):
+    def _identity(r, c): return (r, c)
+    def _rot90(r, c): return (c, n1 - r)
+    def _rot180(r, c): return (n1 - r, n1 - c)
+    def _rot270(r, c): return (n1 - c, r)
+    def _refh(r, c): return (r, n1 - c)
+    def _refv(r, c): return (n1 - r, c)
+    def _refd(r, c): return (c, r)
+    def _refa(r, c): return (n1 - c, n1 - r)
+    return [
+        (_identity, False, {"N": "N", "S": "S", "E": "E", "W": "W"}),
+        (_rot90,    True,  {"N": "E", "E": "S", "S": "W", "W": "N"}),
+        (_rot180,   False, {"N": "S", "S": "N", "E": "W", "W": "E"}),
+        (_rot270,   True,  {"N": "W", "W": "S", "S": "E", "E": "N"}),
+        (_refh,     True,  {"N": "N", "S": "S", "E": "W", "W": "E"}),
+        (_refv,     True,  {"N": "S", "S": "N", "E": "E", "W": "W"}),
+        (_refd,     False, {"N": "W", "W": "N", "S": "E", "E": "S"}),
+        (_refa,     False, {"N": "E", "E": "N", "S": "W", "W": "S"}),
+    ]
 
-N1 = GRID_N - 1
-
-
-def _t_identity(r, c): return (r, c)
-def _t_rot90(r, c): return (c, N1 - r)
-def _t_rot180(r, c): return (N1 - r, N1 - c)
-def _t_rot270(r, c): return (N1 - c, r)
-def _t_refh(r, c): return (r, N1 - c)
-def _t_refv(r, c): return (N1 - r, c)
-def _t_refd(r, c): return (c, r)
-def _t_refa(r, c): return (N1 - c, N1 - r)
-
-
-# Each entry: (coord_transform, swap_mirror_type, dir_remap)
-# dir_remap maps the OLD direction symbol to the NEW one after the transform.
-TRANSFORMS = [
-    (_t_identity, False, {"N": "N", "S": "S", "E": "E", "W": "W"}),
-    (_t_rot90,    True,  {"N": "E", "E": "S", "S": "W", "W": "N"}),
-    (_t_rot180,   False, {"N": "S", "S": "N", "E": "W", "W": "E"}),
-    (_t_rot270,   True,  {"N": "W", "W": "S", "S": "E", "E": "N"}),
-    (_t_refh,     True,  {"N": "N", "S": "S", "E": "W", "W": "E"}),
-    (_t_refv,     True,  {"N": "S", "S": "N", "E": "E", "W": "W"}),
-    (_t_refd,     False, {"N": "W", "W": "N", "S": "E", "E": "S"}),
-    (_t_refa,     False, {"N": "E", "E": "N", "S": "W", "W": "S"}),
-]
 
 DIR_TO_SOURCE_CHAR = {"N": "^", "S": "v", "E": ">", "W": "<"}
 
@@ -197,24 +181,27 @@ def transform_cell(cell, swap_mirror, dir_remap):
 
 
 def transform_grid(grid, coord_fn, swap_mirror, dir_remap):
-    new = [["." for _ in range(GRID_N)] for _ in range(GRID_N)]
-    for r in range(GRID_N):
-        for c in range(GRID_N):
+    n = len(grid)
+    new = [["." for _ in range(n)] for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
             nr, nc = coord_fn(r, c)
             new[nr][nc] = transform_cell(grid[r][c], swap_mirror, dir_remap)
     return new
 
 
 def grid_signature(grid, inventory):
+    n = len(grid)
     rows = ["|".join(row) for row in grid]
-    return f"{inventory}#" + "/".join(rows)
+    return f"{inventory}#{n}x" + "/".join(rows)
 
 
 def canonical_signature(level):
     grid = level["grid"]
     inv = level["inventory"]
+    n1 = len(grid) - 1
     sigs = []
-    for coord_fn, swap, dir_remap in TRANSFORMS:
+    for coord_fn, swap, dir_remap in make_transforms(n1):
         tg = transform_grid(grid, coord_fn, swap, dir_remap)
         sigs.append(grid_signature(tg, inv))
     return min(sigs)
@@ -233,11 +220,12 @@ def validate_schema(level):
     if not isinstance(level["inventory"], int) or level["inventory"] < 0:
         return "inventory must be non-negative integer"
     grid = level["grid"]
-    if not isinstance(grid, list) or len(grid) != GRID_N:
-        return f"grid must be {GRID_N} rows"
+    if not isinstance(grid, list) or len(grid) not in (5, 7):
+        return "grid must be 5×5 or 7×7"
+    n = len(grid)
     for row in grid:
-        if not isinstance(row, list) or len(row) != GRID_N:
-            return f"each row must be {GRID_N} cells"
+        if not isinstance(row, list) or len(row) != n:
+            return f"each row must have {n} cells"
         for cell in row:
             if cell not in (
                 ".", "T", "X",
@@ -268,7 +256,7 @@ def validate_all(seeds_path):
             errors.append(f"[{lid}] schema: {schema_err}")
             continue
 
-        solvable, k, _ = find_solution(level)
+        solvable, k, _ = find_solution_guided(level)
         if not solvable:
             errors.append(f"[{lid}] NOT SOLVABLE with inventory={level['inventory']}")
             continue
@@ -280,7 +268,8 @@ def validate_all(seeds_path):
         seen[canon] = lid
 
         diff = level.get("difficulty", "?")
-        print(f"  [{lid}] OK  inv={level['inventory']}  used={k}  diff={diff}")
+        n = len(level["grid"])
+        print(f"  [{lid}] OK  grid={n}x{n}  inv={level['inventory']}  used={k}  diff={diff}")
 
     print()
     if errors:
@@ -296,29 +285,30 @@ def validate_all(seeds_path):
 # Seed generation
 # ---------------------------------------------------------------------------
 
-SOURCE_SYMBOLS = ["S>", "S<", "S^", "Sv"]
+def random_blank_grid(n):
+    return [["." for _ in range(n)] for _ in range(n)]
 
 
-def random_blank_grid():
-    return [["." for _ in range(GRID_N)] for _ in range(GRID_N)]
+def random_edge_position(rng, side, n):
+    n1 = n - 1
+    if side == "N": return (0, rng.randrange(n))
+    if side == "S": return (n1, rng.randrange(n))
+    if side == "W": return (rng.randrange(n), 0)
+    if side == "E": return (rng.randrange(n), n1)
 
 
-def random_edge_position(rng, side):
-    """side in {'N','S','E','W'}; returns (r,c) on that edge."""
-    if side == "N": return (0, rng.randrange(GRID_N))
-    if side == "S": return (N1, rng.randrange(GRID_N))
-    if side == "W": return (rng.randrange(GRID_N), 0)
-    if side == "E": return (rng.randrange(GRID_N), N1)
+def random_cell_position(rng, n):
+    return (rng.randrange(n), rng.randrange(n))
 
 
-def random_inner_position(rng):
-    return (rng.randrange(GRID_N), rng.randrange(GRID_N))
+def random_interior_position(rng, n):
+    """Returns a non-edge cell, so the target can't be trivially adjacent to a wall."""
+    return (rng.randrange(1, n - 1), rng.randrange(1, n - 1))
 
 
-def random_source_pointing_inward(rng):
+def random_source_pointing_inward(rng, n):
     side = rng.choice(["N", "S", "E", "W"])
-    r, c = random_edge_position(rng, side)
-    # Source on edge must point inward
+    r, c = random_edge_position(rng, side, n)
     if side == "N": dir_char = "v"
     elif side == "S": dir_char = "^"
     elif side == "W": dir_char = ">"
@@ -326,37 +316,33 @@ def random_source_pointing_inward(rng):
     return (r, c, "S" + dir_char)
 
 
-def generate_candidate(rng, inventory, n_fixed=0, n_obstacles=0):
-    """Generate a random grid layout that is solvable with the given inventory."""
-    grid = random_blank_grid()
+def generate_candidate(rng, inventory, n_fixed=0, n_obstacles=0, grid_n=5):
+    grid = random_blank_grid(grid_n)
     occupied = set()
 
-    # Place source on an edge pointing inward
-    sr, sc, sym = random_source_pointing_inward(rng)
+    sr, sc, sym = random_source_pointing_inward(rng, grid_n)
     grid[sr][sc] = sym
     occupied.add((sr, sc))
 
-    # Place target somewhere not equal to source
-    while True:
-        tr, tc = random_inner_position(rng)
+    # Place target at an interior cell so the beam must navigate to reach it
+    for _ in range(100):
+        tr, tc = random_interior_position(rng, grid_n)
         if (tr, tc) not in occupied:
             grid[tr][tc] = "T"
             occupied.add((tr, tc))
             break
 
-    # Place fixed mirrors
     for _ in range(n_fixed):
         for _try in range(20):
-            r, c = random_inner_position(rng)
+            r, c = random_cell_position(rng, grid_n)
             if (r, c) not in occupied:
                 grid[r][c] = "F" + rng.choice(["/", "\\"])
                 occupied.add((r, c))
                 break
 
-    # Place obstacles
     for _ in range(n_obstacles):
         for _try in range(20):
-            r, c = random_inner_position(rng)
+            r, c = random_cell_position(rng, grid_n)
             if (r, c) not in occupied:
                 grid[r][c] = "X"
                 occupied.add((r, c))
@@ -365,13 +351,11 @@ def generate_candidate(rng, inventory, n_fixed=0, n_obstacles=0):
     return {"grid": grid, "inventory": inventory}
 
 
-def generate_unique_solvable(rng, count, category_specs):
+def generate_unique_solvable(rng, total_count, category_specs):
     """
     category_specs is a list of dicts:
       {"count": int, "inventory": int, "fixed": int, "obstacles": int,
-       "min_mirrors_used": int, "difficulty": int}
-
-    Returns a list of `count` validated unique levels.
+       "min_mirrors_used": int, "difficulty": int, "grid_n": int}
     """
     levels = []
     seen_canon = set()
@@ -379,9 +363,10 @@ def generate_unique_solvable(rng, count, category_specs):
 
     for spec in category_specs:
         target_count = spec["count"]
+        grid_n = spec.get("grid_n", 5)
         produced = 0
         attempts = 0
-        max_attempts = target_count * 4000
+        max_attempts = target_count * 8000
 
         while produced < target_count and attempts < max_attempts:
             attempts += 1
@@ -390,17 +375,16 @@ def generate_unique_solvable(rng, count, category_specs):
                 inventory=spec["inventory"],
                 n_fixed=spec["fixed"],
                 n_obstacles=spec["obstacles"],
+                grid_n=grid_n,
             )
             cand["id"] = next_id
             cand["difficulty"] = spec["difficulty"]
 
-            # Quick schema sanity
             if validate_schema(cand) is not None:
                 continue
 
-            # Reject trivially solvable (require at least min_mirrors_used)
             min_used = spec.get("min_mirrors_used", 1)
-            ok, used, _ = find_min_mirror_solution(cand, cand["inventory"])
+            ok, used, _ = find_solution_guided(cand)
             if not ok or used < min_used:
                 continue
 
@@ -412,45 +396,44 @@ def generate_unique_solvable(rng, count, category_specs):
             levels.append(cand)
             next_id += 1
             produced += 1
+            print(
+                f"  [{next_id - 1:02d}] inv={spec['inventory']}  used={used}"
+                f"  diff={spec['difficulty']}  grid={grid_n}x{grid_n}"
+                f"  (attempt {attempts})"
+            )
 
         if produced < target_count:
             print(
                 f"WARNING: category (inv={spec['inventory']}, "
                 f"fixed={spec['fixed']}, obs={spec['obstacles']}, "
-                f"min_used={spec.get('min_mirrors_used',1)}) only produced "
-                f"{produced}/{target_count}",
+                f"min_used={spec.get('min_mirrors_used', 1)}, grid={grid_n}) "
+                f"only produced {produced}/{target_count} after {attempts} attempts",
                 file=sys.stderr,
             )
 
     return levels
 
 
-def generate_50(output_path, seed=42):
+def generate_all(output_path, seed=42):
     rng = random.Random(seed)
     specs = [
-        # Category A: Beginner — inventory 1, no fixed/obstacles, requires 1 mirror
-        {"count": 12, "inventory": 1, "fixed": 0, "obstacles": 0,
-         "min_mirrors_used": 1, "difficulty": 1},
-        # Category B: Easy — 1 fixed mirror + 1 player mirror
-        {"count": 10, "inventory": 1, "fixed": 1, "obstacles": 0,
-         "min_mirrors_used": 1, "difficulty": 2},
-        # Category C: Medium — 2 player mirrors
-        {"count": 10, "inventory": 2, "fixed": 0, "obstacles": 0,
-         "min_mirrors_used": 2, "difficulty": 2},
-        # Category D: Medium with obstacle
-        {"count": 8, "inventory": 2, "fixed": 0, "obstacles": 1,
-         "min_mirrors_used": 2, "difficulty": 3},
-        # Category E: Hard, 3 mirrors
-        {"count": 6, "inventory": 3, "fixed": 0, "obstacles": 1,
-         "min_mirrors_used": 3, "difficulty": 3},
-        # Category F: Expert
-        {"count": 4, "inventory": 3, "fixed": 1, "obstacles": 1,
-         "min_mirrors_used": 3, "difficulty": 4},
+        # Level 1: easy intro, 5×5
+        {"count":  1, "inventory": 1, "fixed": 0, "obstacles": 0,
+         "min_mirrors_used": 1, "difficulty": 1, "grid_n": 5},
+        # Levels 2–20: hard, 7×7, must use all 4 mirrors
+        {"count": 19, "inventory": 4, "fixed": 2, "obstacles": 2,
+         "min_mirrors_used": 4, "difficulty": 4, "grid_n": 7},
+        # Levels 21–40: expert, 7×7, must use at least 4 of 5 mirrors
+        {"count": 20, "inventory": 5, "fixed": 3, "obstacles": 2,
+         "min_mirrors_used": 4, "difficulty": 5, "grid_n": 7},
+        # Levels 41–50: master, 7×7, 5 mirrors + extra obstacle, at least 4 used
+        {"count": 10, "inventory": 5, "fixed": 3, "obstacles": 3,
+         "min_mirrors_used": 4, "difficulty": 6, "grid_n": 7},
     ]
+    print("Generating 50 levels (1 intro + 49 hard)...\n")
     levels = generate_unique_solvable(rng, 50, specs)
-    print(f"Generated {len(levels)} unique solvable levels.")
+    print(f"\nGenerated {len(levels)} unique solvable levels.")
 
-    # Re-id sequentially 1..N
     for i, lvl in enumerate(levels, start=1):
         lvl["id"] = i
         lvl["title"] = f"Level {i}"
@@ -479,9 +462,8 @@ def main():
         count = int(sys.argv[2])
         out = sys.argv[3]
         rng = random.Random(0)
-        # Fall back to a single category
         specs = [{"count": count, "inventory": 2, "fixed": 0, "obstacles": 0,
-                  "min_mirrors_used": 1, "difficulty": 2}]
+                  "min_mirrors_used": 1, "difficulty": 2, "grid_n": 5}]
         levels = generate_unique_solvable(rng, count, specs)
         for i, lvl in enumerate(levels, start=1):
             lvl["id"] = i
@@ -489,9 +471,9 @@ def main():
         with open(out, "w") as f:
             json.dump(levels, f, indent=2)
         print(f"Wrote {len(levels)} levels to {out}")
-    elif cmd == "generate-50":
+    elif cmd == "generate-all":
         out = str(here / "seeds.json")
-        generate_50(out)
+        generate_all(out)
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)
